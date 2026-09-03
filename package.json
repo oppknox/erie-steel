@@ -1,0 +1,18 @@
+{
+  "name": "erie-steel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "build": "esbuild src/client/main.ts --bundle --format=esm --outfile=public/app.js --sourcemap",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy --temporary"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "wrangler": "^4.128.0"
+  }
+}
