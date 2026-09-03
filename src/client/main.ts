@@ -1,10 +1,11 @@
 import { CORPS, HEXES, HEX_BY_ID, MARKET, PRIVATES } from "../engine/catalog.ts";
+import { phaseLabel } from "../discord.ts";
 import { actingPlayer, legalCommands, legalLaysAt } from "../engine/legal.ts";
 import { apply, createGame } from "../engine/reduce.ts";
 import { placedOn, tileExits } from "../engine/track.ts";
 import type { Command, GameState, HexId, PlayerId } from "../engine/types.ts";
 import { asPlayer } from "../engine/types.ts";
-import type { RoomState, Seat } from "../shared.ts";
+import type { Seat } from "../shared.ts";
 import { pickBotCommand } from "./bot.ts";
 import { tipAttr } from "./jargon.ts";
 import { narrate } from "./narrator.ts";
@@ -32,6 +33,7 @@ const SHORT: Record<string, string> = {
   Boston: "Boston",
 };
 
+type PublicRoom = { seats: Seat[]; game: GameState | null; history: GameState[]; webhookSet: boolean };
 type Mode =
   | { kind: "landing" }
   | { kind: "practice"; game: GameState; you: PlayerId; error: string }
@@ -42,11 +44,12 @@ type Mode =
       feed: string[];
       speedMs: number;
     }
-  | { kind: "online"; code: string; seat: Seat | null; room: RoomState; ws: WebSocket; error: string };
+  | { kind: "online"; code: string; seat: Seat | null; room: PublicRoom; ws: WebSocket; error: string };
 
 let mode: Mode = { kind: "landing" };
 let selectedHex: HexId | null = null;
 let name = localStorage.getItem("erie-name") ?? "";
+let discordId = localStorage.getItem("erie-discord-id") ?? "";
 let tutorialStep = 0;
 let showTutorial = !tutorialDone();
 let potatoTimer: ReturnType<typeof setTimeout> | null = null;
@@ -164,14 +167,6 @@ function renderMap(game: GameState): string {
     </defs>
     ${hexes}${tracks}
   </svg>`;
-}
-
-function phaseLabel(game: GameState): string {
-  const ph = game.phase;
-  if (ph.kind === "auction") return "Charter auction";
-  if (ph.kind === "stock") return "Stock round";
-  if (ph.kind === "operating") return `${ph.corpId} ${ph.step} · OR ${game.orNumber}/${game.orsPerSet}`;
-  return "Books closed";
 }
 
 function cmdLabel(cmd: Command, game: GameState): string {
@@ -412,7 +407,7 @@ function paint() {
     app.innerHTML = `<div class="landing"><div class="mast">
       <h1>Erie Steel</h1>
       <p>Auction charters, float companies, and borrow against the next dividend.</p>
-      <div class="row"><input id="nm" placeholder="Your name" value="${name}" /><button id="new">Open a table</button></div>
+      <div class="row"><input id="nm" placeholder="Your name" value="${name}" /><input id="discord-id" placeholder="Discord user ID (optional)" inputmode="numeric" value="${discordId}" /><button id="new">Open a table</button></div>
       <div class="row"><input id="code" placeholder="Table code" maxlength="4" /><button id="join">Join</button></div>
       <div class="row">
         <button class="ghost" id="practice">Practice hotseat</button>
@@ -433,6 +428,14 @@ function paint() {
       name = (e.target as HTMLInputElement).value;
       localStorage.setItem("erie-name", name);
     });
+    (document.getElementById("discord-id") as HTMLInputElement)?.addEventListener("input", (e) => {
+      discordId = (e.target as HTMLInputElement).value;
+      localStorage.setItem("erie-discord-id", discordId);
+    });
+    const linkedCode = new URLSearchParams(location.search).get("code")?.trim().toUpperCase();
+    if (linkedCode && /^[A-Z2-9]{4}$/.test(linkedCode)) {
+      (document.getElementById("code") as HTMLInputElement).value = linkedCode;
+    }
     document.getElementById("new")!.onclick = openTable;
     document.getElementById("join")!.onclick = () => {
       const code = (document.getElementById("code") as HTMLInputElement).value.trim().toUpperCase();
@@ -532,7 +535,9 @@ function paint() {
         <p class="hint">Share this code. Two operators start the books.</p>
         <div class="err">${error}</div>
         ${(room.seats || []).map((s) => `<div class="seat">${s.name}</div>`).join("")}
-        <div class="actions"><button id="start" ${room.seats.length < 2 ? "disabled" : ""}>Start</button></div>
+        <label class="hint" for="webhook">Discord webhook (optional)${room.webhookSet ? " · saved" : ""}</label>
+        <input id="webhook" type="url" maxlength="2048" placeholder="https://discord.com/api/webhooks/… (blank + Save clears it)" value="" />
+        <div class="actions"><button id="save-webhook" class="ghost">Save webhook</button><button id="start" ${room.seats.length < 2 ? "disabled" : ""}>Start</button></div>
       </aside>
     </div>`;
     document.getElementById("home")!.onclick = () => {
@@ -540,6 +545,11 @@ function paint() {
       mode = { kind: "landing" };
       paint();
     };
+    document.getElementById("save-webhook")?.addEventListener("click", () => {
+      if (mode.kind !== "online") return;
+      const url = (document.getElementById("webhook") as HTMLInputElement).value;
+      mode.ws.send(JSON.stringify({ op: "setWebhook", url }));
+    });
     document.getElementById("start")?.addEventListener("click", () => {
       if (mode.kind === "online") mode.ws.send(JSON.stringify({ op: "start" }));
     });
@@ -643,16 +653,16 @@ function connect(code: string) {
   const ws = new WebSocket(`${proto}://${location.host}/ws?code=${code}`);
   const token = sessionStorage.getItem("erie-token") ?? crypto.randomUUID();
   sessionStorage.setItem("erie-token", token);
-  mode = { kind: "online", code, seat: null, room: { seats: [], game: null, history: [] }, ws, error: "" };
-  ws.onopen = () => ws.send(JSON.stringify({ op: "hello", name: name || "Operator", token }));
+  mode = { kind: "online", code, seat: null, room: { seats: [], game: null, history: [], webhookSet: false }, ws, error: "" };
+  ws.onopen = () => ws.send(JSON.stringify({ op: "hello", name: name || "Operator", token, discordId }));
   ws.onmessage = (ev) => {
     if (mode.kind !== "online") return;
     const msg = JSON.parse(ev.data as string) as
-      | { op: "state"; room: RoomState }
+      | { op: "state"; room: PublicRoom }
       | { op: "you"; seat: Seat }
       | { op: "error"; error: string };
     if (msg.op === "state") {
-      mode = { ...mode, room: { seats: msg.room.seats as Seat[], game: msg.room.game, history: [] }, error: "" };
+      mode = { ...mode, room: { seats: msg.room.seats as Seat[], game: msg.room.game, history: [], webhookSet: msg.room.webhookSet }, error: "" };
     }
     if (msg.op === "you") mode = { ...mode, seat: msg.seat };
     if (msg.op === "error") mode = { ...mode, error: msg.error };
