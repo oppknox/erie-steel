@@ -5,8 +5,13 @@ import { placedOn, tileExits } from "../engine/track.ts";
 import type { Command, GameState, HexId, PlayerId } from "../engine/types.ts";
 import { asPlayer } from "../engine/types.ts";
 import type { RoomState, Seat } from "../shared.ts";
+import { pickBotCommand } from "./bot.ts";
+import { tipAttr } from "./jargon.ts";
+import { narrate } from "./narrator.ts";
+import { markTutorialDone, tutorialDone, TUTORIAL_STEPS } from "./tutorial.ts";
 
 const SIZE = 42;
+const BOT_TICK_MS = 550;
 const app = document.getElementById("app")!;
 
 const SHORT: Record<string, string> = {
@@ -30,11 +35,28 @@ const SHORT: Record<string, string> = {
 type Mode =
   | { kind: "landing" }
   | { kind: "practice"; game: GameState; you: PlayerId }
+  | {
+      kind: "potato";
+      game: GameState;
+      human: Set<string>;
+      feed: string[];
+      speedMs: number;
+    }
   | { kind: "online"; code: string; seat: Seat | null; room: RoomState; ws: WebSocket; error: string };
 
 let mode: Mode = { kind: "landing" };
 let selectedHex: HexId | null = null;
 let name = localStorage.getItem("erie-name") ?? "";
+let tutorialStep = 0;
+let showTutorial = !tutorialDone();
+let potatoTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPotatoTimer() {
+  if (potatoTimer != null) {
+    clearTimeout(potatoTimer);
+    potatoTimer = null;
+  }
+}
 
 function hexPoints(cx: number, cy: number, size: number): string {
   const pts: string[] = [];
@@ -187,6 +209,24 @@ function cmdLabel(cmd: Command, game: GameState): string {
   }
 }
 
+function cmdTitle(cmd: Command): string {
+  switch (cmd.type) {
+    case "buyPrivate":
+      return tipAttr("charter");
+    case "startCorp":
+      return tipAttr("float");
+    case "runTrains":
+      return cmd.withhold ? tipAttr("withhold") : tipAttr("dividend");
+    case "takeLoan":
+    case "payLoan":
+      return tipAttr("loans");
+    case "placeToken":
+      return tipAttr("token");
+    default:
+      return "";
+  }
+}
+
 function send(cmd: Command) {
   if (mode.kind === "practice") {
     const r = apply(mode.game, cmd);
@@ -198,9 +238,34 @@ function send(cmd: Command) {
     paint();
     return;
   }
+  if (mode.kind === "potato") {
+    const line = narrate(mode.game, cmd);
+    const r = apply(mode.game, cmd);
+    if (!r.ok) {
+      alert(r.error);
+      return;
+    }
+    const feed = [...mode.feed, line].slice(-40);
+    mode = { ...mode, game: r.state, feed };
+    paint();
+    schedulePotato();
+    return;
+  }
   if (mode.kind === "online") {
     mode.ws.send(JSON.stringify({ op: "cmd", command: cmd }));
   }
+}
+
+function jargonHud(game: GameState): string {
+  const ph = game.phase.kind;
+  const bits: string[] = [];
+  if (ph === "auction") bits.push(`<span class="tip"${tipAttr("auction")}>Auction</span>`);
+  if (ph === "stock") bits.push(`<span class="tip"${tipAttr("stock")}>Stock</span>`);
+  if (ph === "operating") bits.push(`<span class="tip"${tipAttr("OR")}>OR</span>`);
+  bits.push(`<span class="tip"${tipAttr("loans")}>Loans</span>`);
+  bits.push(`<span class="tip"${tipAttr("float")}>Float</span>`);
+  bits.push(`<span class="tip"${tipAttr("charter")}>Charter</span>`);
+  return `<div class="jargon">${bits.join(" · ")}</div>`;
 }
 
 function sheet(game: GameState, you: PlayerId | null, extra = ""): string {
@@ -232,13 +297,16 @@ function sheet(game: GameState, you: PlayerId | null, extra = ""): string {
   const trains = (["2", "3", "4", "5", "6"] as const)
     .map((t) => `<span>${t}×${game.trains[t].left}</span>`)
     .join("");
-  const actions = visible.map((c, i) => `<button data-cmd="${i}">${cmdLabel(c, game)}</button>`).join("");
+  const actions = visible
+    .map((c, i) => `<button data-cmd="${i}"${cmdTitle(c)}>${cmdLabel(c, game)}</button>`)
+    .join("");
   const layHint =
     game.phase.kind === "operating" && game.phase.step === "lay"
       ? `<p class="hint">Click a hex to lay track.</p>`
       : "";
   return `<aside class="sheet">
     <h2>${phaseLabel(game)}</h2>
+    ${jargonHud(game)}
     ${extra}
     <h3>Bank $${game.bank}</h3>
     <div class="trains">${trains}</div>
@@ -254,6 +322,71 @@ function sheet(game: GameState, you: PlayerId | null, extra = ""): string {
   </aside>`;
 }
 
+function tutorialOverlay(): string {
+  if (!showTutorial) return "";
+  const step = TUTORIAL_STEPS[Math.min(tutorialStep, TUTORIAL_STEPS.length - 1)];
+  const last = tutorialStep >= TUTORIAL_STEPS.length - 1;
+  return `<div class="tutorial" role="dialog" aria-modal="true">
+    <div class="tutorial-card">
+      <div class="tutorial-progress">${tutorialStep + 1} / ${TUTORIAL_STEPS.length}</div>
+      <h2>${step.title}</h2>
+      <p>${step.body}</p>
+      <div class="tutorial-actions">
+        <button type="button" class="ghost" id="tut-skip">Skip</button>
+        <button type="button" id="tut-next">${last ? "Play" : "Next"}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindTutorial() {
+  if (!showTutorial) return;
+  document.getElementById("tut-skip")?.addEventListener("click", () => {
+    showTutorial = false;
+    markTutorialDone();
+    paint();
+  });
+  document.getElementById("tut-next")?.addEventListener("click", () => {
+    if (tutorialStep >= TUTORIAL_STEPS.length - 1) {
+      showTutorial = false;
+      markTutorialDone();
+    } else {
+      tutorialStep += 1;
+    }
+    paint();
+  });
+}
+
+function potatoSeatControls(game: GameState, human: Set<string>): string {
+  return `<div class="potato-seats">${game.players
+    .map((p) => {
+      const controlled = human.has(p.id);
+      return `<div class="potato-seat">
+        <span>${p.name}${controlled ? " · you" : " · bot"}</span>
+        <button type="button" data-seat="${p.id}" class="ghost seat-ctrl">${controlled ? "Release" : "Take control"}</button>
+      </div>`;
+    })
+    .join("")}</div>`;
+}
+
+function schedulePotato() {
+  clearPotatoTimer();
+  if (mode.kind !== "potato") return;
+  if (mode.game.phase.kind === "ended") return;
+  const actor = actingPlayer(mode.game);
+  if (!actor) return;
+  if (mode.human.has(actor)) return;
+  const delay = mode.speedMs;
+  potatoTimer = setTimeout(() => {
+    if (mode.kind !== "potato") return;
+    const a = actingPlayer(mode.game);
+    if (!a || mode.human.has(a)) return;
+    const cmd = pickBotCommand(mode.game, a);
+    if (!cmd) return;
+    send(cmd);
+  }, delay);
+}
+
 function paint() {
   if (mode.kind === "landing") {
     app.innerHTML = `<div class="landing"><div class="mast">
@@ -261,9 +394,22 @@ function paint() {
       <p>Auction charters, float companies, and borrow against the next dividend.</p>
       <div class="row"><input id="nm" placeholder="Your name" value="${name}" /><button id="new">Open a table</button></div>
       <div class="row"><input id="code" placeholder="Table code" maxlength="4" /><button id="join">Join</button></div>
-      <div class="row"><button class="ghost" id="practice">Practice hotseat</button></div>
-    </div></div>`;
-    (document.getElementById("nm") as HTMLInputElement).addEventListener("input", (e) => {
+      <div class="row">
+        <button class="ghost" id="practice">Practice hotseat</button>
+      </div>
+      <div class="row potato-row">
+        <label class="bot-count" for="bots">Bots
+          <select id="bots" title="Number of AI seats (2–4)">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <button class="ghost" id="potato" title="Potato mode — watch bots play with a play-by-play feed">Watch bots</button>
+      </div>
+      <p class="landing-hint">First visit? A short tour appears once — you can Skip anytime.</p>
+    </div>${tutorialOverlay()}</div>`;
+    (document.getElementById("nm") as HTMLInputElement)?.addEventListener("input", (e) => {
       name = (e.target as HTMLInputElement).value;
       localStorage.setItem("erie-name", name);
     });
@@ -273,18 +419,83 @@ function paint() {
       if (code) connect(code);
     };
     document.getElementById("practice")!.onclick = startPractice;
+    document.getElementById("potato")!.onclick = () => {
+      const n = Number((document.getElementById("bots") as HTMLSelectElement).value);
+      startPotato(Number.isFinite(n) ? n : 3);
+    };
+    bindTutorial();
     return;
   }
 
   if (mode.kind === "practice") {
     const g = mode.game;
     app.innerHTML = `<div class="shell">
-      <header class="top"><div class="wordmark">Erie Steel</div><div class="bank">Bank $${g.bank}</div><div class="phase">Practice · ${phaseLabel(g)}</div></header>
+      <header class="top">
+        <div class="wordmark">Erie Steel</div>
+        <div class="bank">Bank $${g.bank}</div>
+        <div class="phase">Practice · ${phaseLabel(g)}</div>
+        <button type="button" class="ghost top-btn" id="home">Leave</button>
+      </header>
       <div class="mapwrap">${renderMap(g)}<div class="log">${g.log.slice(-6).map((l) => `<div>${l}</div>`).join("")}</div></div>
       ${sheet(g, mode.you, `<p class="hint">Hotseat. You play every operator.</p>`)}
+      ${tutorialOverlay()}
     </div>`;
+    document.getElementById("home")!.onclick = () => {
+      mode = { kind: "landing" };
+      paint();
+    };
     bindMap(g, mode.you);
     bindActions(g, mode.you);
+    bindTutorial();
+    return;
+  }
+
+  if (mode.kind === "potato") {
+    const g = mode.game;
+    const actor = actingPlayer(g);
+    const you = actor && mode.human.has(actor) ? actor : null;
+    const feedHtml = mode.feed
+      .slice(-12)
+      .map((l) => `<div class="feed-line">${l}</div>`)
+      .join("");
+    app.innerHTML = `<div class="shell potato-shell">
+      <header class="top">
+        <div class="wordmark">Erie Steel · Potato</div>
+        <div class="bank">Bank $${g.bank}</div>
+        <div class="phase">Watch bots · ${phaseLabel(g)}</div>
+        <button type="button" class="ghost top-btn" id="home">Leave</button>
+      </header>
+      <div class="mapwrap">${renderMap(g)}
+        <div class="feed" aria-live="polite"><div class="feed-title">Play-by-play</div>${feedHtml || `<div class="feed-line mute">Bots are warming up…</div>`}</div>
+      </div>
+      ${sheet(
+        g,
+        you,
+        `<p class="hint">Potato mode — bots play until you take a seat.</p>${potatoSeatControls(g, mode.human)}`,
+      )}
+      ${tutorialOverlay()}
+    </div>`;
+    document.getElementById("home")!.onclick = () => {
+      clearPotatoTimer();
+      mode = { kind: "landing" };
+      paint();
+    };
+    app.querySelectorAll("[data-seat]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (mode.kind !== "potato") return;
+        const id = (btn as HTMLElement).dataset.seat!;
+        const human = new Set(mode.human);
+        if (human.has(id)) human.delete(id);
+        else human.add(id);
+        mode = { ...mode, human };
+        paint();
+        schedulePotato();
+      });
+    });
+    bindMap(g, you);
+    bindActions(g, you);
+    bindTutorial();
+    schedulePotato();
     return;
   }
 
@@ -292,7 +503,8 @@ function paint() {
   const g = room.game;
   if (!g) {
     app.innerHTML = `<div class="shell">
-      <header class="top"><div class="wordmark">Erie Steel</div><div class="phase">Table ${code}</div></header>
+      <header class="top"><div class="wordmark">Erie Steel</div><div class="phase">Table ${code}</div>
+        <button type="button" class="ghost top-btn" id="home">Leave</button></header>
       <div class="mapwrap"></div>
       <aside class="sheet">
         <h2>Table ${code}</h2>
@@ -302,16 +514,27 @@ function paint() {
         <div class="actions"><button id="start" ${room.seats.length < 2 ? "disabled" : ""}>Start</button></div>
       </aside>
     </div>`;
+    document.getElementById("home")!.onclick = () => {
+      if (mode.kind === "online") mode.ws.close();
+      mode = { kind: "landing" };
+      paint();
+    };
     document.getElementById("start")?.addEventListener("click", () => {
       if (mode.kind === "online") mode.ws.send(JSON.stringify({ op: "start" }));
     });
     return;
   }
   app.innerHTML = `<div class="shell">
-    <header class="top"><div class="wordmark">Erie Steel</div><div class="bank">Bank $${g.bank}</div><div class="phase">${code} · ${phaseLabel(g)}</div></header>
+    <header class="top"><div class="wordmark">Erie Steel</div><div class="bank">Bank $${g.bank}</div><div class="phase">${code} · ${phaseLabel(g)}</div>
+      <button type="button" class="ghost top-btn" id="home">Leave</button></header>
     <div class="mapwrap">${renderMap(g)}<div class="log">${g.log.slice(-6).map((l) => `<div>${l}</div>`).join("")}</div></div>
     ${sheet(g, seat?.id ?? null, `<div class="err">${error}</div>`)}
   </div>`;
+  document.getElementById("home")!.onclick = () => {
+    if (mode.kind === "online") mode.ws.close();
+    mode = { kind: "landing" };
+    paint();
+  };
   bindMap(g, seat?.id ?? null);
   bindActions(g, seat?.id ?? null);
 }
@@ -357,19 +580,44 @@ function bindMap(game: GameState, you: PlayerId | null) {
 }
 
 function startPractice() {
+  clearPotatoTimer();
   const created = createGame([name || "Ada", "Bess", "Cal"]);
   if (!created.ok) return;
   mode = { kind: "practice", game: created.state, you: asPlayer("p1") };
   paint();
 }
 
+function botNames(n: number): string[] {
+  const pool = ["Bess", "Cal", "Drew", "Eve"];
+  const names = [name || "Ada"];
+  for (let i = 0; i < n - 1; i++) names.push(pool[i] ?? `Bot${i + 2}`);
+  return names.slice(0, Math.max(2, Math.min(4, n)));
+}
+
+function startPotato(count: number) {
+  clearPotatoTimer();
+  const created = createGame(botNames(count));
+  if (!created.ok) return;
+  mode = {
+    kind: "potato",
+    game: created.state,
+    human: new Set(),
+    feed: ["Potato mode — watching the bots."],
+    speedMs: BOT_TICK_MS,
+  };
+  paint();
+  schedulePotato();
+}
+
 async function openTable() {
+  clearPotatoTimer();
   const res = await fetch("/api/new", { method: "POST" });
   const data = (await res.json()) as { code: string };
   connect(data.code);
 }
 
 function connect(code: string) {
+  clearPotatoTimer();
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws?code=${code}`);
   const token = sessionStorage.getItem("erie-token") ?? crypto.randomUUID();
