@@ -19,6 +19,8 @@ export function legalLaysAt(
   if (ph.kind !== "operating" || ph.step !== "lay") return [];
   const c = state.corps.find((x) => x.id === ph.corpId);
   if (!c || c.president !== actor) return [];
+  const maxLays = currentPhaseColor(state) === "green" ? 1 : 2;
+  if (c.laidThisOr >= maxLays) return [];
   const hexDef = HEXES.find((h) => h.id === hex);
   if (!hexDef) return [];
   const color = currentPhaseColor(state);
