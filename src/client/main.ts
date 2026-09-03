@@ -34,7 +34,7 @@ const SHORT: Record<string, string> = {
 
 type Mode =
   | { kind: "landing" }
-  | { kind: "practice"; game: GameState; you: PlayerId }
+  | { kind: "practice"; game: GameState; you: PlayerId; error: string }
   | {
       kind: "potato";
       game: GameState;
@@ -231,10 +231,11 @@ function send(cmd: Command) {
   if (mode.kind === "practice") {
     const r = apply(mode.game, cmd);
     if (!r.ok) {
-      alert(r.error);
+      mode = { ...mode, error: r.error };
+      paint();
       return;
     }
-    mode = { ...mode, game: r.state, you: actingPlayer(r.state) ?? mode.you };
+    mode = { ...mode, game: r.state, you: actingPlayer(r.state) ?? mode.you, error: "" };
     paint();
     return;
   }
@@ -242,7 +243,18 @@ function send(cmd: Command) {
     const line = narrate(mode.game, cmd);
     const r = apply(mode.game, cmd);
     if (!r.ok) {
-      alert(r.error);
+      const actor = actingPlayer(mode.game);
+      const feed = [...mode.feed, `Move rejected: ${r.error}`].slice(-40);
+      mode = { ...mode, feed };
+      paint();
+      if (actor && mode.game.phase.kind !== "ended" && !mode.human.has(actor)) {
+        const fallback = legalCommands(mode.game, actor).find((c) => c.type === "skip" || c.type === "pass");
+        if (fallback) {
+          send(fallback);
+          return;
+        }
+      }
+      schedulePotato();
       return;
     }
     const feed = [...mode.feed, line].slice(-40);
@@ -382,7 +394,15 @@ function schedulePotato() {
     const a = actingPlayer(mode.game);
     if (!a || mode.human.has(a)) return;
     const cmd = pickBotCommand(mode.game, a);
-    if (!cmd) return;
+    if (!cmd) {
+      const fallback = legalCommands(mode.game, a).find((c) => c.type === "skip" || c.type === "pass");
+      if (fallback) {
+        send(fallback);
+        return;
+      }
+      schedulePotato();
+      return;
+    }
     send(cmd);
   }, delay);
 }
@@ -429,6 +449,7 @@ function paint() {
 
   if (mode.kind === "practice") {
     const g = mode.game;
+    const practiceError = mode.error ? `<div class="err">${mode.error}</div>` : "";
     app.innerHTML = `<div class="shell">
       <header class="top">
         <div class="wordmark">Erie Steel</div>
@@ -437,7 +458,7 @@ function paint() {
         <button type="button" class="ghost top-btn" id="home">Leave</button>
       </header>
       <div class="mapwrap">${renderMap(g)}<div class="log">${g.log.slice(-6).map((l) => `<div>${l}</div>`).join("")}</div></div>
-      ${sheet(g, mode.you, `<p class="hint">Hotseat. You play every operator.</p>`)}
+      ${sheet(g, mode.you, `${practiceError}<p class="hint">Hotseat. You play every operator.</p>`)}
       ${tutorialOverlay()}
     </div>`;
     document.getElementById("home")!.onclick = () => {
@@ -583,7 +604,7 @@ function startPractice() {
   clearPotatoTimer();
   const created = createGame([name || "Ada", "Bess", "Cal"]);
   if (!created.ok) return;
-  mode = { kind: "practice", game: created.state, you: asPlayer("p1") };
+  mode = { kind: "practice", game: created.state, you: asPlayer("p1"), error: "" };
   paint();
 }
 
