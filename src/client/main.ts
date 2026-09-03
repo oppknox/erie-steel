@@ -5,7 +5,7 @@ import { apply, createGame } from "../engine/reduce.ts";
 import { placedOn, tileExits } from "../engine/track.ts";
 import type { Command, GameState, HexId, PlayerId } from "../engine/types.ts";
 import { asPlayer } from "../engine/types.ts";
-import type { RoomState, Seat } from "../shared.ts";
+import type { Seat } from "../shared.ts";
 import { pickBotCommand } from "./bot.ts";
 import { tipAttr } from "./jargon.ts";
 import { narrate } from "./narrator.ts";
@@ -33,6 +33,7 @@ const SHORT: Record<string, string> = {
   Boston: "Boston",
 };
 
+type PublicRoom = { seats: Seat[]; game: GameState | null; history: GameState[]; webhookSet: boolean };
 type Mode =
   | { kind: "landing" }
   | { kind: "practice"; game: GameState; you: PlayerId; error: string }
@@ -43,7 +44,7 @@ type Mode =
       feed: string[];
       speedMs: number;
     }
-  | { kind: "online"; code: string; seat: Seat | null; room: RoomState; ws: WebSocket; error: string };
+  | { kind: "online"; code: string; seat: Seat | null; room: PublicRoom; ws: WebSocket; error: string };
 
 let mode: Mode = { kind: "landing" };
 let selectedHex: HexId | null = null;
@@ -534,8 +535,8 @@ function paint() {
         <p class="hint">Share this code. Two operators start the books.</p>
         <div class="err">${error}</div>
         ${(room.seats || []).map((s) => `<div class="seat">${s.name}</div>`).join("")}
-        <label class="hint" for="webhook">Discord webhook (optional)</label>
-        <input id="webhook" type="url" maxlength="2048" placeholder="https://discord.com/api/webhooks/…" value="${room.webhookUrl ?? ""}" />
+        <label class="hint" for="webhook">Discord webhook (optional)${room.webhookSet ? " · saved" : ""}</label>
+        <input id="webhook" type="url" maxlength="2048" placeholder="https://discord.com/api/webhooks/… (blank + Save clears it)" value="" />
         <div class="actions"><button id="save-webhook" class="ghost">Save webhook</button><button id="start" ${room.seats.length < 2 ? "disabled" : ""}>Start</button></div>
       </aside>
     </div>`;
@@ -652,16 +653,16 @@ function connect(code: string) {
   const ws = new WebSocket(`${proto}://${location.host}/ws?code=${code}`);
   const token = sessionStorage.getItem("erie-token") ?? crypto.randomUUID();
   sessionStorage.setItem("erie-token", token);
-  mode = { kind: "online", code, seat: null, room: { seats: [], game: null, history: [] }, ws, error: "" };
+  mode = { kind: "online", code, seat: null, room: { seats: [], game: null, history: [], webhookSet: false }, ws, error: "" };
   ws.onopen = () => ws.send(JSON.stringify({ op: "hello", name: name || "Operator", token, discordId }));
   ws.onmessage = (ev) => {
     if (mode.kind !== "online") return;
     const msg = JSON.parse(ev.data as string) as
-      | { op: "state"; room: RoomState }
+      | { op: "state"; room: PublicRoom }
       | { op: "you"; seat: Seat }
       | { op: "error"; error: string };
     if (msg.op === "state") {
-      mode = { ...mode, room: { seats: msg.room.seats as Seat[], game: msg.room.game, history: [], webhookUrl: msg.room.webhookUrl }, error: "" };
+      mode = { ...mode, room: { seats: msg.room.seats as Seat[], game: msg.room.game, history: [], webhookSet: msg.room.webhookSet }, error: "" };
     }
     if (msg.op === "you") mode = { ...mode, seat: msg.seat };
     if (msg.op === "error") mode = { ...mode, error: msg.error };

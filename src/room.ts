@@ -35,11 +35,11 @@ export class GameRoom extends DurableObject<Env> {
     await this.ctx.storage.put("room", this.room);
   }
 
-  private publicRoom(): { seats: { id: PlayerId; name: string }[]; game: RoomState["game"]; webhookUrl?: string } {
+  private publicRoom(): { seats: { id: PlayerId; name: string }[]; game: RoomState["game"]; webhookSet: boolean } {
     return {
       seats: this.room.seats.map((s) => ({ id: s.id, name: s.name })),
       game: this.room.game,
-      webhookUrl: this.room.webhookUrl,
+      webhookSet: Boolean(this.room.webhookUrl),
     };
   }
 
