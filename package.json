@@ -6,7 +6,7 @@
     "test": "vitest run",
     "build": "esbuild src/client/main.ts --bundle --format=esm --outfile=public/app.js --sourcemap",
     "dev": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy --temporary"
+    "deploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",

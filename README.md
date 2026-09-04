@@ -6,7 +6,11 @@ This is an original 18xx-inspired table. It is not a rules clone of 1817 or any 
 
 ## Play
 
-Open the public URL (or run locally). From the landing screen:
+Live table: [erie-steel.seanknox.workers.dev](https://erie-steel.seanknox.workers.dev)
+
+Source: [github.com/oppknox/erie-steel](https://github.com/oppknox/erie-steel)
+
+Open that URL (or run locally). From the landing screen:
 
 - **Open a table** — get a 4-letter code; friends **Join** with that code. Two seats can start.
 - **Practice hotseat** — play every seat in one browser.
@@ -25,13 +29,13 @@ npm run build
 npm run dev
 ```
 
-`npm run dev` builds the client and starts Wrangler against `wrangler.jsonc` (Durable Object rooms + static `public/` assets). Deploy path is unchanged:
+`npm run dev` builds the client and starts Wrangler against `wrangler.jsonc` (Durable Object rooms + static `public/` assets).
+
+To publish to your own Cloudflare account:
 
 ```
-npx wrangler deploy --temporary
+npm run deploy
 ```
-
-Claim the printed URL within 60 minutes to keep the table.
 
 ## Bots
 
