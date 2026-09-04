@@ -1,20 +1,22 @@
 # Erie Steel
 
-A live multiplayer railroad game. Two to five players auction charters, float companies, lay track from Cleveland to New York, take loans, and run trains.
+**Open-source live multiplayer railroad game.** Two to five players auction charters, float companies, lay track from Cleveland to New York, take loans, and run trains — in the browser, with friends or bots.
 
-This is an original 18xx-inspired table. It is not a rules clone of 1817 or any licensed title. The 1817 game at [18xx.games/game/266422](https://18xx.games/game/266422) is the spark: loans, 5-share companies, and a Northeast map.
+Inspired by the 18xx family (loans, 5-share companies, Northeast map). MIT licensed. Play, fork, and contribute.
 
-## Play
+| | |
+|---|---|
+| **Play** | [erie-steel.seanknox.workers.dev](https://erie-steel.seanknox.workers.dev) |
+| **Source** | [github.com/oppknox/erie-steel](https://github.com/oppknox/erie-steel) |
+| **License** | [MIT](LICENSE) |
 
-Live table: [erie-steel.seanknox.workers.dev](https://erie-steel.seanknox.workers.dev)
+## Modes
 
-Source: [github.com/oppknox/erie-steel](https://github.com/oppknox/erie-steel)
+From the landing screen:
 
-Open that URL (or run locally). From the landing screen:
-
-- **Open a table** — get a 4-letter code; friends **Join** with that code. Two seats can start.
+- **Open a table** — get a 4-letter code; friends **Join** with that code. Two seats can start. Optional Discord webhook for turn notifications.
 - **Practice hotseat** — play every seat in one browser.
-- **Watch bots (Potato)** — 2-4 AI seats play with a plain-English play-by-play feed. **Take control** / **Release** any seat anytime. In-app only (no CLI flag).
+- **Watch bots (Potato)** — 2–4 AI seats play with a plain-English play-by-play feed. **Take control** / **Release** any seat anytime. In-app only (no CLI flag).
 
 A short first-run tutorial (under ~90s) appears once; **Skip** is always available. Progress is stored in `localStorage` (`erie-tutorial-done`).
 
@@ -37,6 +39,17 @@ To publish to your own Cloudflare account:
 npm run deploy
 ```
 
-## Bots
+## Code map
 
-Potato bots pick only from `legalCommands` / `legalLaysAt` (`src/client/bot.ts`). Narration lives in `src/client/narrator.ts`.
+| Path | Role |
+|------|------|
+| `src/engine/` | Rules, legal moves, reduce |
+| `src/room.ts` / `src/worker.ts` | Durable Object rooms + Worker entry |
+| `src/client/` | UI, bots, narrator, tutorial |
+| `src/discord.ts` | Optional Discord turn notifications |
+| `src/client/bot.ts` | Potato bots (`legalCommands` / `legalLaysAt`) |
+| `src/client/narrator.ts` | Play-by-play narration |
+
+## Contributing
+
+Issues, PRs, and forks are welcome. Clone the repo, run the commands above, and open a pull request against `main`.
